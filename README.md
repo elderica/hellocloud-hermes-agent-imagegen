@@ -2,12 +2,24 @@
 
 [Hermes Agent](https://hermes-agent.nousresearch.com/) 用の **HelloCloud 画像生成バックエンドプラグイン** です。
 [HelloCloud](https://router.hello.ai) の OpenAI 互換画像生成 API (`/v1/images/generations`) 経由で
-**Krea 2 Medium Turbo** (`krea-2-medium-turbo`, 自社DC) を利用できます。
+**Krea 2 Medium Turbo** (`krea-2-medium-turbo`) と
+**Krea 2 Turbo Uncensored** (`krea-2-turbo-uncensored`) を利用できます。
 
-- テキスト → 画像 (text-to-image)
-- 参照画像 1 枚 → 画像 (image-to-image)
+- テキスト → 画像 (text-to-image、両モデル)
+- 参照画像 1 枚 → 画像 (image-to-image、`krea-2-medium-turbo` のみ)
 - 出力は PNG (base64) を `$HERMES_HOME/cache/images/` に保存
 - API キーは **環境変数 `HELLOCLOUD_API_KEY`** から取得 (`.env` への自動書き込みはしない)
+
+## 対応モデル
+
+| モデル ID | 解像度 | 参照画像 | 料金 |
+|-----------|--------|----------|------|
+| `krea-2-medium-turbo` (既定) | 1K | 最大 1 枚 | 画像トークン課金 (1 枚 約 ¥3) |
+| `krea-2-turbo-uncensored` | 1K / 2K | 非対応 | 1 枚 ¥10 (1K / 2K 同額) |
+
+このプラグインはどちらのモデルも 1 リクエスト 1 枚、既定の 1K で生成します。
+`krea-2-turbo-uncensored` の 2K 出力や 1 リクエスト最大 4 枚の生成は、API を直接
+利用する場合の仕様です。
 
 > HelloCloud は [OpenAI 互換](https://router.hello.ai/docs) で、`/v1/images/generations` は
 > OpenAI SDK の `images.generate` とそのまま互換です。本プラグインはそれを
@@ -79,7 +91,7 @@ hermes plugins install elderica/hellocloud-hermes-agent-imagegen
 ```yaml
 image_gen:
   provider: hellocloud
-  model: krea-2-medium-turbo      # 任意 (この 1 つしかないため既定)
+  model: krea-2-medium-turbo      # 任意 (既定)。krea-2-turbo-uncensored も選択可
   hellocloud:
     # base_url: https://api.router.hello.ai/v1   # 任意 (既定)
 ```
@@ -89,6 +101,8 @@ image_gen:
 ```bash
 hermes config set image_gen.provider hellocloud
 hermes config set image_gen.model krea-2-medium-turbo
+# Krea 2 Turbo Uncensored に切り替える場合:
+# hermes config set image_gen.model krea-2-turbo-uncensored
 ```
 
 > ユーザープラグインは**オプトイン**です。`plugins.enabled` に
@@ -174,18 +188,22 @@ HelloCloud の `krea-2-medium-turbo` は `1:1 / 4:3 / 3:2 / 16:9 / 4:5 / 2:3 / 9
 
 `image_generate` の `image_url` に画像 (ローカルパス / URL / data URL) を渡すと、
 HelloCloud の `input_references` に変換されて image-to-image が実行されます。
-**最大 1 枚**です。
+**`krea-2-medium-turbo` で最大 1 枚**です。`krea-2-turbo-uncensored` は参照画像に
+対応していないため、参照画像を指定した場合は API 呼び出し前にエラーを返します。
 
 ---
 
 ## 課金・制限
 
-- 生成画像のトークン数 × 単価で課金されます (1K 1 枚 ≈ 4,175 image tokens
-  ≈ 約 ¥3)。プロンプトのテキストトークンは課金されません。
+- `krea-2-medium-turbo` は生成画像のトークン数 × 単価で課金されます
+  (1K 1 枚 ≈ 4,175 image tokens ≈ 約 ¥3)。プロンプトのテキストトークンは課金されません。
+- `krea-2-turbo-uncensored` は 1 枚 ¥10 で、1K / 2K は同額です。
+  ZDR Go Uncensored の定額枠でも利用できます。
 - 失敗したリクエストは課金されません。
-- 1 リクエスト = 1 枚 (`n > 1` は非対応、複数枚はリクエスト分割で)。
+- このプラグインは 1 リクエスト = 1 枚 (`n=1`) で生成します。
+  `krea-2-turbo-uncensored` を API から直接使う場合は最大 4 枚を指定できます。
 - `stream` / `response_format: url` / `output_format` は非対応 (400)。
-- 定額プランの対象外で、クレジットから消費します。
+- `krea-2-medium-turbo` は定額プランの対象外で、クレジットから消費します。
 
 詳細は [HelloCloud ドキュメント](https://router.hello.ai/docs) を参照してください。
 

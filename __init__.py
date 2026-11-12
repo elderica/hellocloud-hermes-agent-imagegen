@@ -1,8 +1,9 @@
 """HelloCloud (https://router.hello.ai) 画像生成バックエンド。
 
-HelloCloud の OpenAI 互換 ``/v1/images/generations`` 表面で ``krea-2-medium-turbo``
-(Krea 2 Medium Turbo, 自社DC) を利用します。出力は base64 (``b64_json``) で
-同期返却され、``$HERMES_HOME/cache/images/`` に保存されます。
+HelloCloud の OpenAI 互換 ``/v1/images/generations`` 表面で
+``krea-2-medium-turbo`` (Krea 2 Medium Turbo) と
+``krea-2-turbo-uncensored`` (Krea 2 Turbo Uncensored) を利用します。
+出力は base64 (``b64_json``) で同期返却され、``$HERMES_HOME/cache/images/`` に保存されます。
 
 このプラグインは Hermes の公開プラグイン API (``agent.image_gen_provider``)
 と ``openai`` SDK にのみ依存します。Hermes 内部の非公開モジュールには触れず、
@@ -53,13 +54,21 @@ BASE_URL_ENV = "HELLOCLOUD_IMAGE_BASE_URL"
 REQUEST_TIMEOUT_SECONDS = 1800.0  # 混雑時はキュー待ちが十数分になることがある
 
 # HelloCloud 画像モデルカタログ (GET /v1/images/models 参照)。ID は /v1/images/generations
-# にそのまま送られる。1 リクエスト = 1 枚 (n > 1 は非対応)。
+# にそのまま送られる。Hermes からは 1 リクエスト = 1 枚で生成する。
 _MODELS: Dict[str, Dict[str, Any]] = {
     "krea-2-medium-turbo": {
         "display": "Krea 2 Medium Turbo (HelloCloud)",
         "speed": "~30-60s",
         "strengths": "1K PNG 生成、1 枚の参照画像 (image-to-image) / seed 対応。1K 1 枚 約 ¥3",
         "price": "1K 1 枚 約 ¥3 (4,175 image tokens @ ¥720/M)",
+        "max_reference_images": 1,
+    },
+    "krea-2-turbo-uncensored": {
+        "display": "Krea 2 Turbo Uncensored (HelloCloud)",
+        "speed": "1K / 2K",
+        "strengths": "FP8 text-to-image / seed 対応。API 直接利用時は最大 4 枚、参照画像は非対応",
+        "price": "1 枚 ¥10 (1K / 2K 同額)",
+        "max_reference_images": 0,
     },
 }
 DEFAULT_MODEL = "krea-2-medium-turbo"
@@ -163,7 +172,7 @@ def _to_reference_url(ref: str) -> Tuple[Optional[str], Optional[str]]:
 
 
 class HelloCloudImageGenProvider(ImageGenProvider):
-    """HelloCloud ``/v1/images/generations`` バックエンド (krea-2-medium-turbo)。"""
+    """HelloCloud ``/v1/images/generations`` バックエンド (Krea 2 モデル)。"""
 
     @property
     def name(self) -> str:
@@ -175,8 +184,10 @@ class HelloCloudImageGenProvider(ImageGenProvider):
         return bool(_resolve_api_key()) and _openai_importable()
 
     def capabilities(self) -> Dict[str, Any]:
-        # 参照画像 1 枚まで対応 (image-to-image)。
-        return {"modalities": ["text", "image"], "max_reference_images": 1}
+        _model_id, meta = _resolve_model()
+        max_refs = int(meta.get("max_reference_images", 1))
+        modalities = ["text", "image"] if max_refs else ["text"]
+        return {"modalities": modalities, "max_reference_images": max_refs}
 
     def list_models(self) -> List[Dict[str, Any]]:
         return [
@@ -198,7 +209,7 @@ class HelloCloudImageGenProvider(ImageGenProvider):
         return {
             "name": "HelloCloud",
             "badge": "paid",
-            "tag": "Krea 2 Medium Turbo via HelloCloud (api.router.hello.ai) — 1K PNG、image-to-image。HELLOCLOUD_API_KEY (環境変数)",
+            "tag": "Krea 2 Medium Turbo / Turbo Uncensored via HelloCloud (api.router.hello.ai) — HELLOCLOUD_API_KEY (環境変数)",
             "env_vars": [],
         }
 
@@ -241,7 +252,7 @@ class HelloCloudImageGenProvider(ImageGenProvider):
             )
 
         # 参照画像: 主 ``image_url`` を最優先、次は reference_image_urls の先頭。
-        # HelloCloud は 1 枚まで。ローカルパス → data URL。
+        # 対応モデルでは 1 枚まで。ローカルパス → data URL。
         ref_sources: List[str] = []
         if isinstance(image_url, str) and image_url.strip():
             ref_sources.append(image_url.strip())
@@ -249,6 +260,12 @@ class HelloCloudImageGenProvider(ImageGenProvider):
             for ref in reference_image_urls:
                 if isinstance(ref, str) and ref.strip():
                     ref_sources.append(ref.strip())
+        if ref_sources and not _meta.get("max_reference_images", 1):
+            return error_response(
+                error=f"{model_id} は参照画像 (image-to-image) に対応していません。",
+                error_type="invalid_argument", provider="hellocloud", model=model_id,
+                prompt=prompt, aspect_ratio=aspect,
+            )
         if len(ref_sources) > 1:
             ref_sources = ref_sources[:1]
 
