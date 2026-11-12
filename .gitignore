@@ -9,7 +9,7 @@ dist/
 # Hermes / secrets — 絶対にコミットしない
 .env
 *.env
-HAI_API_KEY
+HELLOCLOUD_API_KEY
 
 # 生成物・キャッシュ
 *.png
