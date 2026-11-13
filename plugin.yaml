@@ -1,5 +1,5 @@
 name: hellocloud-imagegen
-version: 0.3.0
+version: 0.4.0
 description: "HelloCloud (router.hello.ai) 画像生成バックエンド — Krea 2 / MiniMax H3 Image 対応"
 author: elderica
 kind: backend

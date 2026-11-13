@@ -21,8 +21,8 @@
 | `minimax-h3-image` | 1K / 2K / 4K | PNG / JPEG | 非対応 | 画像 ¥800/M tok + テキスト入力 ¥600/M tok |
 
 このプラグインはどのモデルも 1 リクエスト 1 枚、既定の 1K・PNG で生成します。
-`krea-2-turbo-uncensored` の 2K 出力や 1 リクエスト最大 4 枚の生成は、API を直接
-利用する場合の仕様です。MiniMax H3 Image の解像度は API の `resolution` で指定します。
+`krea-2-turbo-uncensored` は 2K、`minimax-h3-image` は 2K / 4K も選択できます。
+`krea-2-turbo-uncensored` の 1 リクエスト最大 4 枚の生成は、API を直接利用する場合の仕様です。
 
 > HelloCloud は [OpenAI 互換](https://router.hello.ai/docs) で、`/v1/images/generations` は
 > OpenAI SDK の `images.generate` とそのまま互換です。本プラグインはそれを
@@ -97,6 +97,7 @@ image_gen:
   model: krea-2-medium-turbo      # 任意 (既定)。krea-2-turbo-uncensored / minimax-h3-image も選択可
   hellocloud:
     # base_url: https://api.router.hello.ai/v1   # 任意 (既定)
+    # resolution: 4K                              # モデルに応じて 1K / 2K / 4K
     # output_format: jpeg                        # minimax-h3-image では png / jpeg
 ```
 
@@ -107,10 +108,12 @@ hermes config set image_gen.provider hellocloud
 hermes config set image_gen.model krea-2-medium-turbo
 # Krea 2 Turbo Uncensored に切り替える場合:
 # hermes config set image_gen.model krea-2-turbo-uncensored
-# MiniMax H3 Image を JPEG で生成する場合:
+# MiniMax H3 Image を 4K JPEG で生成する場合:
 # hermes config set image_gen.model minimax-h3-image
+# hermes config set image_gen.hellocloud.resolution 4K --force
 # hermes config set image_gen.hellocloud.output_format jpeg --force
-# PNG に戻す場合:
+# 1K PNG に戻す場合:
+# hermes config set image_gen.hellocloud.resolution 1K --force
 # hermes config set image_gen.hellocloud.output_format png --force
 ```
 
@@ -175,9 +178,11 @@ open("out.png", "wb").write(base64.b64decode(resp.data[0].b64_json))
 | `config.yaml` | `image_gen.provider` | — | `hellocloud` に設定して有効化 |
 | `config.yaml` | `image_gen.model` | `krea-2-medium-turbo` | 利用するモデル ID |
 | `config.yaml` | `image_gen.hellocloud.base_url` | `https://api.router.hello.ai/v1` | API ベース URL |
+| `config.yaml` | `image_gen.hellocloud.resolution` | `1K` | 解像度 (モデルごとの対応値のみ) |
 | `config.yaml` | `image_gen.hellocloud.output_format` | `png` | MiniMax H3 Image の出力形式 (`png` / `jpeg`) |
 | 環境変数 | `HELLOCLOUD_IMAGE_BASE_URL` | (同上) | base_url の環境変数上書き |
 | 環境変数 | `HELLOCLOUD_IMAGE_MODEL` | (model の上) | モデル ID の環境変数上書き |
+| 環境変数 | `HELLOCLOUD_IMAGE_RESOLUTION` | (resolution の上) | 解像度の環境変数上書き |
 | 環境変数 | `HELLOCLOUD_IMAGE_OUTPUT_FORMAT` | (output_format の上) | 出力形式の環境変数上書き |
 
 ### アスペクト比
@@ -196,12 +201,18 @@ HelloCloud の `krea-2-medium-turbo` は `1:1 / 4:3 / 3:2 / 16:9 / 4:5 / 2:3 / 9
 を対応します。`16:9` 等のより狭い比は HelloCloud 側で `aspect_ratio` として
 指定できます (Hermes 標準の 3 値に収まらないため、このプラグインでは未提供)。
 
-### 画像形式
+### 解像度と画像形式
+
+`image_gen.hellocloud.resolution` で解像度を選択できます。
+`krea-2-medium-turbo` は `1K`、`krea-2-turbo-uncensored` は `1K / 2K`、
+`minimax-h3-image` は `1K / 2K / 4K` に対応します。
+`HELLOCLOUD_IMAGE_RESOLUTION` でも上書きできます。
+Hermes の `resolution` 引数では `1K / 2K` を選択でき、`4K` は設定値で指定します。
 
 `minimax-h3-image` は `image_gen.hellocloud.output_format` に `png` (既定) または
 `jpeg` を設定できます。`HELLOCLOUD_IMAGE_OUTPUT_FORMAT` でも上書きできます。
-Krea 2 の 2 モデルは PNG のみです。対応しない形式を指定した場合は API 呼び出し前に
-エラーを返します。4K PNG は応答が大きくなるため、4K では JPEG が推奨されます。
+Krea 2 の 2 モデルは PNG のみです。対応しない解像度や画像形式を指定した場合は
+API 呼び出し前にエラーを返します。4K PNG は応答が大きくなるため、4K では JPEG が推奨されます。
 
 ### image-to-image (参照画像 1 枚)
 

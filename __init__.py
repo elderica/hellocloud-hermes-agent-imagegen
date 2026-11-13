@@ -5,7 +5,8 @@ HelloCloud の OpenAI 互換 ``/v1/images/generations`` 表面で
 ``krea-2-turbo-uncensored`` (Krea 2 Turbo Uncensored)、
 ``minimax-h3-image`` (MiniMax H3 Image) を利用します。
 出力は base64 (``b64_json``) で同期返却され、``$HERMES_HOME/cache/images/`` に保存されます。
-MiniMax H3 Image では ``image_gen.hellocloud.output_format`` で PNG / JPEG を選べます。
+MiniMax H3 Image では ``image_gen.hellocloud.output_format`` で PNG / JPEG、
+``image_gen.hellocloud.resolution`` で 1K / 2K / 4K を選べます。
 
 このプラグインは Hermes の公開プラグイン API (``agent.image_gen_provider``)
 と ``openai`` SDK にのみ依存します。Hermes 内部の非公開モジュールには触れず、
@@ -20,6 +21,7 @@ MiniMax H3 Image では ``image_gen.hellocloud.output_format`` で PNG / JPEG �
       model: krea-2-medium-turbo        # 任意 (既定)
       hellocloud:
         base_url: https://api.router.hello.ai/v1   # 任意 (既定)
+        resolution: 1K                              # モデルに応じて 1K / 2K / 4K
         output_format: png                         # MiniMax H3 は png / jpeg
 
 認証キーは **環境変数 ``HELLOCLOUD_API_KEY``** から取得します (有料キー ``hello_...``。
@@ -66,6 +68,7 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "price": "1K 1 枚 約 ¥3 (4,175 image tokens @ ¥720/M)",
         "max_reference_images": 1,
         "output_formats": ("png",),
+        "resolutions": ("1K",),
     },
     "krea-2-turbo-uncensored": {
         "display": "Krea 2 Turbo Uncensored (HelloCloud)",
@@ -74,6 +77,7 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "price": "1 枚 ¥10 (1K / 2K 同額)",
         "max_reference_images": 0,
         "output_formats": ("png",),
+        "resolutions": ("1K", "2K"),
     },
     "minimax-h3-image": {
         "display": "MiniMax H3 Image (HelloCloud)",
@@ -82,6 +86,7 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "price": "画像 ¥800/M tok + テキスト入力 ¥600/M tok (1K 1:1 は画像分 約 ¥0.8)",
         "max_reference_images": 0,
         "output_formats": ("png", "jpeg"),
+        "resolutions": ("1K", "2K", "4K"),
     },
 }
 DEFAULT_MODEL = "krea-2-medium-turbo"
@@ -93,6 +98,16 @@ _SIZE_BY_ASPECT: Dict[str, str] = {
     "landscape": "1536x1024",   # 3:2
     "square": "1024x1024",      # 1:1
     "portrait": "1024x1536",    # 2:3
+}
+_ASPECT_BY_ASPECT: Dict[str, str] = {
+    "landscape": "3:2",
+    "square": "1:1",
+    "portrait": "2:3",
+}
+_H3_SIZE_BY_RESOLUTION: Dict[str, Dict[str, str]] = {
+    "1K": {"landscape": "1248x832", "square": "1024x1024", "portrait": "832x1248"},
+    "2K": {"landscape": "2496x1664", "square": "2048x2048", "portrait": "1664x2496"},
+    "4K": {"landscape": "5024x3360", "square": "4096x4096", "portrait": "3360x5024"},
 }
 
 
@@ -152,6 +167,28 @@ def _resolve_output_format(caller_format: Optional[str] = None) -> str:
     except Exception:  # noqa: BLE001
         pass
     return "png"
+
+
+def _resolve_resolution(caller_resolution: Optional[str] = None) -> str:
+    """``resolution`` 引数 → 環境変数 → ``image_gen.hellocloud.resolution`` → 1K。"""
+    if isinstance(caller_resolution, str) and caller_resolution.strip():
+        return caller_resolution.strip().upper()
+    env = os.environ.get("HELLOCLOUD_IMAGE_RESOLUTION", "").strip()
+    if env:
+        return env.upper()
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        section = cfg.get("image_gen") if isinstance(cfg, dict) else {}
+        hellocloud = section.get("hellocloud") if isinstance(section, dict) else {}
+        if isinstance(hellocloud, dict):
+            val = hellocloud.get("resolution")
+            if isinstance(val, str) and val.strip():
+                return val.strip().upper()
+    except Exception:  # noqa: BLE001
+        pass
+    return "1K"
 
 
 def _resolve_model(caller_model: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
@@ -222,7 +259,12 @@ class HelloCloudImageGenProvider(ImageGenProvider):
         _model_id, meta = _resolve_model()
         max_refs = int(meta.get("max_reference_images", 1))
         modalities = ["text", "image"] if max_refs else ["text"]
-        return {"modalities": modalities, "max_reference_images": max_refs}
+        capabilities: Dict[str, Any] = {
+            "modalities": modalities, "max_reference_images": max_refs,
+        }
+        if len(meta.get("resolutions", ("1K",))) > 1:
+            capabilities["creative_controls"] = ["resolution"]
+        return capabilities
 
     def list_models(self) -> List[Dict[str, Any]]:
         return [
@@ -261,6 +303,7 @@ class HelloCloudImageGenProvider(ImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         model_id, _meta = _resolve_model(kwargs.get("model"))
         output_format = _resolve_output_format(kwargs.get("output_format"))
+        resolution = _resolve_resolution(kwargs.get("resolution"))
 
         if not prompt:
             return error_response(
@@ -273,6 +316,14 @@ class HelloCloudImageGenProvider(ImageGenProvider):
             return error_response(
                 error=f"{model_id} の output_format は {' / '.join(allowed_formats)} のみ対応しています "
                       f"(指定: {output_format})。",
+                error_type="invalid_argument", provider="hellocloud", model=model_id,
+                prompt=prompt, aspect_ratio=aspect,
+            )
+        allowed_resolutions = tuple(_meta.get("resolutions", ("1K",)))
+        if resolution not in allowed_resolutions:
+            return error_response(
+                error=f"{model_id} の resolution は {' / '.join(allowed_resolutions)} のみ対応しています "
+                      f"(指定: {resolution})。",
                 error_type="invalid_argument", provider="hellocloud", model=model_id,
                 prompt=prompt, aspect_ratio=aspect,
             )
@@ -313,11 +364,16 @@ class HelloCloudImageGenProvider(ImageGenProvider):
         if len(ref_sources) > 1:
             ref_sources = ref_sources[:1]
 
-        request: Dict[str, Any] = dict(
-            model=model_id, prompt=prompt, size=_size_for(aspect), n=1,
-        )
+        request: Dict[str, Any] = dict(model=model_id, prompt=prompt, n=1)
         if model_id == "minimax-h3-image":
             request["output_format"] = output_format
+            request["extra_body"] = {
+                "aspect_ratio": _ASPECT_BY_ASPECT[aspect], "resolution": resolution,
+            }
+        else:
+            request["size"] = _size_for(aspect)
+            if model_id == "krea-2-turbo-uncensored" and resolution != "1K":
+                request["extra_body"] = {"resolution": resolution}
         if ref_sources:
             url, rerr = _to_reference_url(ref_sources[0])
             if rerr:
@@ -408,9 +464,18 @@ class HelloCloudImageGenProvider(ImageGenProvider):
                 prompt=prompt, aspect_ratio=aspect,
             )
 
-        extra: Dict[str, Any] = {"size": _size_for(aspect)}
+        if model_id == "minimax-h3-image":
+            extra: Dict[str, Any] = {"size": _H3_SIZE_BY_RESOLUTION[resolution][aspect]}
+        elif model_id == "krea-2-turbo-uncensored":
+            # API の実出力寸法は size 引数と一致しないため、推定値を返さない。
+            extra = {}
+        else:
+            extra = {"size": _size_for(aspect)}
         if model_id == "minimax-h3-image":
             extra["output_format"] = output_format
+            extra["resolution"] = resolution
+        elif model_id == "krea-2-turbo-uncensored":
+            extra["resolution"] = resolution
         usage = getattr(response, "usage", None)
         if usage is not None and getattr(usage, "completion_tokens", None):
             try:
