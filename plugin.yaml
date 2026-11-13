@@ -1,6 +1,6 @@
 name: hellocloud-imagegen
-version: 0.2.0
-description: "HelloCloud (router.hello.ai) 画像生成バックエンド — Krea 2 Medium Turbo / Turbo Uncensored 対応"
+version: 0.3.0
+description: "HelloCloud (router.hello.ai) 画像生成バックエンド — Krea 2 / MiniMax H3 Image 対応"
 author: elderica
 kind: backend
 requires_env:

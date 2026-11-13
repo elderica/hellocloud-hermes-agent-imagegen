@@ -1,9 +1,11 @@
 """HelloCloud (https://router.hello.ai) 画像生成バックエンド。
 
 HelloCloud の OpenAI 互換 ``/v1/images/generations`` 表面で
-``krea-2-medium-turbo`` (Krea 2 Medium Turbo) と
-``krea-2-turbo-uncensored`` (Krea 2 Turbo Uncensored) を利用します。
+``krea-2-medium-turbo`` (Krea 2 Medium Turbo)、
+``krea-2-turbo-uncensored`` (Krea 2 Turbo Uncensored)、
+``minimax-h3-image`` (MiniMax H3 Image) を利用します。
 出力は base64 (``b64_json``) で同期返却され、``$HERMES_HOME/cache/images/`` に保存されます。
+MiniMax H3 Image では ``image_gen.hellocloud.output_format`` で PNG / JPEG を選べます。
 
 このプラグインは Hermes の公開プラグイン API (``agent.image_gen_provider``)
 と ``openai`` SDK にのみ依存します。Hermes 内部の非公開モジュールには触れず、
@@ -18,6 +20,7 @@ HelloCloud の OpenAI 互換 ``/v1/images/generations`` 表面で
       model: krea-2-medium-turbo        # 任意 (既定)
       hellocloud:
         base_url: https://api.router.hello.ai/v1   # 任意 (既定)
+        output_format: png                         # MiniMax H3 は png / jpeg
 
 認証キーは **環境変数 ``HELLOCLOUD_API_KEY``** から取得します (有料キー ``hello_...``。
 トライアルキーは画像生成エンドポイントで使えません)。``.env`` への自動書き込み
@@ -62,6 +65,7 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "1K PNG 生成、1 枚の参照画像 (image-to-image) / seed 対応。1K 1 枚 約 ¥3",
         "price": "1K 1 枚 約 ¥3 (4,175 image tokens @ ¥720/M)",
         "max_reference_images": 1,
+        "output_formats": ("png",),
     },
     "krea-2-turbo-uncensored": {
         "display": "Krea 2 Turbo Uncensored (HelloCloud)",
@@ -69,6 +73,15 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "FP8 text-to-image / seed 対応。API 直接利用時は最大 4 枚、参照画像は非対応",
         "price": "1 枚 ¥10 (1K / 2K 同額)",
         "max_reference_images": 0,
+        "output_formats": ("png",),
+    },
+    "minimax-h3-image": {
+        "display": "MiniMax H3 Image (HelloCloud)",
+        "speed": "1K / 2K: ~5s、4K: ~25s",
+        "strengths": "FP8 text-to-image。1K / 2K / 4K、PNG / JPEG、9 種類の比率 / seed 対応",
+        "price": "画像 ¥800/M tok + テキスト入力 ¥600/M tok (1K 1:1 は画像分 約 ¥0.8)",
+        "max_reference_images": 0,
+        "output_formats": ("png", "jpeg"),
     },
 }
 DEFAULT_MODEL = "krea-2-medium-turbo"
@@ -117,6 +130,28 @@ def _resolve_base_url() -> str:
         pass
     env = os.environ.get(BASE_URL_ENV, "").strip()
     return env or DEFAULT_BASE_URL
+
+
+def _resolve_output_format(caller_format: Optional[str] = None) -> str:
+    """``output_format`` 引数 → 環境変数 → ``image_gen.hellocloud.output_format`` → PNG。"""
+    if isinstance(caller_format, str) and caller_format.strip():
+        return caller_format.strip().lower()
+    env = os.environ.get("HELLOCLOUD_IMAGE_OUTPUT_FORMAT", "").strip()
+    if env:
+        return env.lower()
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        section = cfg.get("image_gen") if isinstance(cfg, dict) else {}
+        hellocloud = section.get("hellocloud") if isinstance(section, dict) else {}
+        if isinstance(hellocloud, dict):
+            val = hellocloud.get("output_format")
+            if isinstance(val, str) and val.strip():
+                return val.strip().lower()
+    except Exception:  # noqa: BLE001
+        pass
+    return "png"
 
 
 def _resolve_model(caller_model: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
@@ -172,7 +207,7 @@ def _to_reference_url(ref: str) -> Tuple[Optional[str], Optional[str]]:
 
 
 class HelloCloudImageGenProvider(ImageGenProvider):
-    """HelloCloud ``/v1/images/generations`` バックエンド (Krea 2 モデル)。"""
+    """HelloCloud ``/v1/images/generations`` バックエンド (Krea 2 / MiniMax H3)。"""
 
     @property
     def name(self) -> str:
@@ -209,7 +244,7 @@ class HelloCloudImageGenProvider(ImageGenProvider):
         return {
             "name": "HelloCloud",
             "badge": "paid",
-            "tag": "Krea 2 Medium Turbo / Turbo Uncensored via HelloCloud (api.router.hello.ai) — HELLOCLOUD_API_KEY (環境変数)",
+            "tag": "Krea 2 / MiniMax H3 Image via HelloCloud (api.router.hello.ai) — HELLOCLOUD_API_KEY (環境変数)",
             "env_vars": [],
         }
 
@@ -225,12 +260,21 @@ class HelloCloudImageGenProvider(ImageGenProvider):
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
         model_id, _meta = _resolve_model(kwargs.get("model"))
+        output_format = _resolve_output_format(kwargs.get("output_format"))
 
         if not prompt:
             return error_response(
                 error="プロンプトは必須で、空ではない文字列である必要があります。",
                 error_type="invalid_argument", provider="hellocloud", model=model_id,
                 aspect_ratio=aspect,
+            )
+        allowed_formats = tuple(_meta.get("output_formats", ("png",)))
+        if output_format not in allowed_formats:
+            return error_response(
+                error=f"{model_id} の output_format は {' / '.join(allowed_formats)} のみ対応しています "
+                      f"(指定: {output_format})。",
+                error_type="invalid_argument", provider="hellocloud", model=model_id,
+                prompt=prompt, aspect_ratio=aspect,
             )
 
         api_key = _resolve_api_key()
@@ -272,6 +316,8 @@ class HelloCloudImageGenProvider(ImageGenProvider):
         request: Dict[str, Any] = dict(
             model=model_id, prompt=prompt, size=_size_for(aspect), n=1,
         )
+        if model_id == "minimax-h3-image":
+            request["output_format"] = output_format
         if ref_sources:
             url, rerr = _to_reference_url(ref_sources[0])
             if rerr:
@@ -340,7 +386,8 @@ class HelloCloudImageGenProvider(ImageGenProvider):
         image_ref: Optional[str] = None
         try:
             if b64:
-                image_ref = str(save_b64_image(b64, prefix="hellocloud", extension="png"))
+                extension = "jpg" if model_id == "minimax-h3-image" and output_format == "jpeg" else "png"
+                image_ref = str(save_b64_image(b64, prefix="hellocloud", extension=extension))
             elif url:
                 image_ref = str(save_url_image(url, prefix="hellocloud"))
         except Exception as exc:  # noqa: BLE001
@@ -362,6 +409,8 @@ class HelloCloudImageGenProvider(ImageGenProvider):
             )
 
         extra: Dict[str, Any] = {"size": _size_for(aspect)}
+        if model_id == "minimax-h3-image":
+            extra["output_format"] = output_format
         usage = getattr(response, "usage", None)
         if usage is not None and getattr(usage, "completion_tokens", None):
             try:

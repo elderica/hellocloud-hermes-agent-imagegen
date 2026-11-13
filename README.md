@@ -2,24 +2,27 @@
 
 [Hermes Agent](https://hermes-agent.nousresearch.com/) 用の **HelloCloud 画像生成バックエンドプラグイン** です。
 [HelloCloud](https://router.hello.ai) の OpenAI 互換画像生成 API (`/v1/images/generations`) 経由で
-**Krea 2 Medium Turbo** (`krea-2-medium-turbo`) と
-**Krea 2 Turbo Uncensored** (`krea-2-turbo-uncensored`) を利用できます。
+**Krea 2 Medium Turbo** (`krea-2-medium-turbo`)、
+**Krea 2 Turbo Uncensored** (`krea-2-turbo-uncensored`)、
+**MiniMax H3 Image** (`minimax-h3-image`) を利用できます。
 
-- テキスト → 画像 (text-to-image、両モデル)
+- テキスト → 画像 (text-to-image、全モデル)
 - 参照画像 1 枚 → 画像 (image-to-image、`krea-2-medium-turbo` のみ)
-- 出力は PNG (base64) を `$HERMES_HOME/cache/images/` に保存
+- MiniMax H3 Image は 1K / 2K / 4K、PNG / JPEG に対応
+- 出力は base64 を `$HERMES_HOME/cache/images/` に保存
 - API キーは **環境変数 `HELLOCLOUD_API_KEY`** から取得 (`.env` への自動書き込みはしない)
 
 ## 対応モデル
 
-| モデル ID | 解像度 | 参照画像 | 料金 |
-|-----------|--------|----------|------|
-| `krea-2-medium-turbo` (既定) | 1K | 最大 1 枚 | 画像トークン課金 (1 枚 約 ¥3) |
-| `krea-2-turbo-uncensored` | 1K / 2K | 非対応 | 1 枚 ¥10 (1K / 2K 同額) |
+| モデル ID | 解像度 | 画像形式 | 参照画像 | 料金 |
+|-----------|--------|----------|----------|------|
+| `krea-2-medium-turbo` (既定) | 1K | PNG | 最大 1 枚 | 画像トークン課金 (1 枚 約 ¥3) |
+| `krea-2-turbo-uncensored` | 1K / 2K | PNG | 非対応 | 1 枚 ¥10 (1K / 2K 同額) |
+| `minimax-h3-image` | 1K / 2K / 4K | PNG / JPEG | 非対応 | 画像 ¥800/M tok + テキスト入力 ¥600/M tok |
 
-このプラグインはどちらのモデルも 1 リクエスト 1 枚、既定の 1K で生成します。
+このプラグインはどのモデルも 1 リクエスト 1 枚、既定の 1K・PNG で生成します。
 `krea-2-turbo-uncensored` の 2K 出力や 1 リクエスト最大 4 枚の生成は、API を直接
-利用する場合の仕様です。
+利用する場合の仕様です。MiniMax H3 Image の解像度は API の `resolution` で指定します。
 
 > HelloCloud は [OpenAI 互換](https://router.hello.ai/docs) で、`/v1/images/generations` は
 > OpenAI SDK の `images.generate` とそのまま互換です。本プラグインはそれを
@@ -91,9 +94,10 @@ hermes plugins install elderica/hellocloud-hermes-agent-imagegen
 ```yaml
 image_gen:
   provider: hellocloud
-  model: krea-2-medium-turbo      # 任意 (既定)。krea-2-turbo-uncensored も選択可
+  model: krea-2-medium-turbo      # 任意 (既定)。krea-2-turbo-uncensored / minimax-h3-image も選択可
   hellocloud:
     # base_url: https://api.router.hello.ai/v1   # 任意 (既定)
+    # output_format: jpeg                        # minimax-h3-image では png / jpeg
 ```
 
 `hermes config set` 版:
@@ -103,6 +107,11 @@ hermes config set image_gen.provider hellocloud
 hermes config set image_gen.model krea-2-medium-turbo
 # Krea 2 Turbo Uncensored に切り替える場合:
 # hermes config set image_gen.model krea-2-turbo-uncensored
+# MiniMax H3 Image を JPEG で生成する場合:
+# hermes config set image_gen.model minimax-h3-image
+# hermes config set image_gen.hellocloud.output_format jpeg --force
+# PNG に戻す場合:
+# hermes config set image_gen.hellocloud.output_format png --force
 ```
 
 > ユーザープラグインは**オプトイン**です。`plugins.enabled` に
@@ -132,7 +141,8 @@ hermes config set image_gen.model krea-2-medium-turbo
 ```
 
 生成された画像は `$HERMES_HOME/cache/images/hellocloud_*.png` として保存され、
-チャットに添付として届けられます。
+MiniMax H3 Image で JPEG を選んだ場合は `hellocloud_*.jpg` となります。
+チャットには添付として届きます。
 
 ### OpenAI SDK で直接 (参照用)
 
@@ -165,8 +175,10 @@ open("out.png", "wb").write(base64.b64decode(resp.data[0].b64_json))
 | `config.yaml` | `image_gen.provider` | — | `hellocloud` に設定して有効化 |
 | `config.yaml` | `image_gen.model` | `krea-2-medium-turbo` | 利用するモデル ID |
 | `config.yaml` | `image_gen.hellocloud.base_url` | `https://api.router.hello.ai/v1` | API ベース URL |
+| `config.yaml` | `image_gen.hellocloud.output_format` | `png` | MiniMax H3 Image の出力形式 (`png` / `jpeg`) |
 | 環境変数 | `HELLOCLOUD_IMAGE_BASE_URL` | (同上) | base_url の環境変数上書き |
 | 環境変数 | `HELLOCLOUD_IMAGE_MODEL` | (model の上) | モデル ID の環境変数上書き |
+| 環境変数 | `HELLOCLOUD_IMAGE_OUTPUT_FORMAT` | (output_format の上) | 出力形式の環境変数上書き |
 
 ### アスペクト比
 
@@ -184,12 +196,20 @@ HelloCloud の `krea-2-medium-turbo` は `1:1 / 4:3 / 3:2 / 16:9 / 4:5 / 2:3 / 9
 を対応します。`16:9` 等のより狭い比は HelloCloud 側で `aspect_ratio` として
 指定できます (Hermes 標準の 3 値に収まらないため、このプラグインでは未提供)。
 
+### 画像形式
+
+`minimax-h3-image` は `image_gen.hellocloud.output_format` に `png` (既定) または
+`jpeg` を設定できます。`HELLOCLOUD_IMAGE_OUTPUT_FORMAT` でも上書きできます。
+Krea 2 の 2 モデルは PNG のみです。対応しない形式を指定した場合は API 呼び出し前に
+エラーを返します。4K PNG は応答が大きくなるため、4K では JPEG が推奨されます。
+
 ### image-to-image (参照画像 1 枚)
 
 `image_generate` の `image_url` に画像 (ローカルパス / URL / data URL) を渡すと、
 HelloCloud の `input_references` に変換されて image-to-image が実行されます。
-**`krea-2-medium-turbo` で最大 1 枚**です。`krea-2-turbo-uncensored` は参照画像に
-対応していないため、参照画像を指定した場合は API 呼び出し前にエラーを返します。
+**`krea-2-medium-turbo` で最大 1 枚**です。`krea-2-turbo-uncensored` と
+`minimax-h3-image` は参照画像に対応していないため、参照画像を指定した場合は
+API 呼び出し前にエラーを返します。
 
 ---
 
@@ -199,10 +219,13 @@ HelloCloud の `input_references` に変換されて image-to-image が実行さ
   (1K 1 枚 ≈ 4,175 image tokens ≈ 約 ¥3)。プロンプトのテキストトークンは課金されません。
 - `krea-2-turbo-uncensored` は 1 枚 ¥10 で、1K / 2K は同額です。
   ZDR Go Uncensored の定額枠でも利用できます。
+- `minimax-h3-image` は画像出力 ¥800 / 1M tok とテキスト入力 ¥600 / 1M tok で
+  課金されます。1K の 1:1 は画像分が約 ¥0.8 です。定額プランの対象外です。
 - 失敗したリクエストは課金されません。
 - このプラグインは 1 リクエスト = 1 枚 (`n=1`) で生成します。
   `krea-2-turbo-uncensored` を API から直接使う場合は最大 4 枚を指定できます。
-- `stream` / `response_format: url` / `output_format` は非対応 (400)。
+- `stream` / `response_format: url` は非対応 (400)。
+  `output_format` を受け付けるのは `minimax-h3-image` だけで、Krea 2 では 400 になります。
 - `krea-2-medium-turbo` は定額プランの対象外で、クレジットから消費します。
 
 詳細は [HelloCloud ドキュメント](https://router.hello.ai/docs) を参照してください。
